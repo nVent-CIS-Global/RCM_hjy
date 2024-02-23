@@ -17,7 +17,7 @@
   ******************************************************************************/
 /*****************************************************************************/
 /******************************************************************************
- * History : 21-09-2021  Ver.1.9F
+ * History : 17-10-2023  Ver.60
  *          
  *****************************************************************************/
 
@@ -50,15 +50,15 @@
 #define Status                0x01                    
 #define status_byte1          0x00
 #define status_byte2          0x00
-#define Firmware_version      62                                              /*indicates firmware version*/
+#define Firmware_version      35                                                /*indicates firmware version*/
 #define Hardware_version      0x10                                              /*indicates hardware version*/
 #define CALIBRATION_SAMPLES   20                                                /*Total no of calibration data*/
 #define TOTAL_SAMPLES         200                                               /*Total no of samples*/
-#define SELFTEST_TOLERANCE    8                                                 /*selftest current tolerance value (+- 7mA) */
-#define SELFTEST_CURRENT      50                                                /*self test compare current*/
+#define SELFTEST_TOLERANCE    10                                                 /*selftest current tolerance value (+- 10mA) */
+#define SELFTEST_CURRENT      46                                                /*self test compare current*/
 #define ZERO_CALIBRATION_SAMPLES 2                                              /*Zero calibration samples */                                          
 #define RMS_AVG               5
-
+#define TypeB7_compensate      4
 /******************************************************************************
  * Private global variables and functions
  *****************************************************************************/
@@ -69,6 +69,7 @@ static volatile bool readStatus=false;
 static volatile bool writeStatus=false;
 static volatile bool errorStatus=false;
 static volatile bool usart_read_status;
+static volatile bool TypeB8_F=false;
 uint8_t txData[4]={0};                                                          /*!< SPI Transmit data */
 uint8_t rxData[2]={0};                                                          /*!< SPI Receive data  */
 uint8_t uartTxData[10]={};                                                      /*!< UART Transmit data */
@@ -98,12 +99,19 @@ uint16_t counters =0;                                                           
 /*********************************************************/
 static volatile bool SelfTestSTF1 = false;
 static volatile bool FrzCheckSTF1 = false;
-static volatile bool FrzCheckCountSTF1 = false;
+static volatile bool FrzCheckSTF2 = false;
 static volatile bool EICheckSTF = false;
+//static volatile bool FFFFF = false;
+uint16_t EICheckState=0;
 uint32_t SysTimecount=0;
 uint16_t FrzCheckCount1=0;
 uint16_t FrzCheckCount2=0;
+uint16_t FrzCheckCountemp1=0;
+uint16_t FrzCheckCountemp2=0;
+uint16_t FrzCheckDCount=0;
 uint16_t FrzPreiod=0;
+uint16_t FrzPreiod1=0;
+uint16_t FrzPreiod2=0;
 uint16_t TimerBaseCode=0;
 uint16_t TimerBaseCodeStore=0;
 uint32_t TimerBaseCodeTemp=0;
@@ -113,31 +121,33 @@ uint16_t countaa;
 
 uint16_t countbb;*/
 int16_t fit_Rms(int16_t * Rvalue,uint16_t Preiod);
+uint16_t fit_Preiod(uint16_t m, uint16_t n);
+void fit_Preiod1(uint16_t m, uint16_t n);
 void EIC_User_Handler(uintptr_t context);   //????????
-//#define _calibration_table                                                      /*!<Define predetermined calibration table */
+#define _calibration_table                                                      /*!<Define predetermined calibration table */
 #ifdef _calibration_table
-uint32_t offset= 0x7f22;                                                         /*!< predetermined offset value */                                                                             /*!< predetermined calibration array */
+uint32_t offset= 0x7f4c;                                                         /*!< predetermined offset value */                                                                             /*!< predetermined calibration array */
 uint16_t Adc_calibration[CALIBRATION_SAMPLES][4]={   
-{32512,33044,21760,42827},
-{33024,33530,22784,41780},
-{33536,34033,23808,40734},
-{34048,34503,24832,39723},
-{34560,35013,25856,38705},
-{35072,35520,26879,37675},
-{35584,36004,27904,36638},
-{36096,36486,29132,35398},
-{36608,36996,29951,34562},
-{37120,37517,30976,33554},
-{37632,37973,33024,31505},
-{38144,38489,34048,30458},
-{38656,38995,35072,29441},
-{39168,39522,36096,28417},
-{39680,39996,37120,27390},
-{40192,40506,38144,26360},
-{40704,41015,39168,25328},
-{41216,41491,40192,24321},
-{41728,42032,41216,23280},
-{42240,42543,42240,22233},
+{32102,32702,19148,19650},
+{32204,32794,21708,22219},
+{32307,32886,23808,24344},
+{32409,33003,25856,26410},
+{32512,33097,27904,28444},
+{32768,33322,28979,29520},
+{33024,33590,29951,30490},
+{33280,33821,30976,31532},
+{33536,34076,31488,32057},
+{34048,34581,31744,32282},
+{34560,35063,32255,32805},
+{35072,35541,32512,33048},
+{36096,36525,33024,33574},
+{37120,37540,34048,34585},
+{38144,38538,35072,35632},
+{39168,39548,36096,36649},
+{40192,40529,37120,37677},
+{41216,41538,39168,39707},
+{42240,42595,41216,41784},
+{44800,45090,44851,45457}
 };
 #endif
 
@@ -162,7 +172,6 @@ size_t      txSize1 = 2;
 size_t      rxSize = 2;
 size_t      RX_Count;
 
-
 /**
  * Function Name : RMS_calculation
  *
@@ -182,8 +191,6 @@ int Rms_calculationACDC(int16_t AC,int16_t DC)
     return Rms_ADC_Value;
 
 }
-
-
 
 
 /**
@@ -209,6 +216,7 @@ uint16_t Rms_calculation(uint16_t current[])
     return Rms_ADC_Value;
 
 }
+
 
 /**
  * Function Name : RMS_calculation1
@@ -257,44 +265,59 @@ void usartWriteEventHandler(SERCOM_USART_EVENT event, uintptr_t context )
 void EIC_User_Handler(uintptr_t context)
 {
    // LED_CONTROL_Toggle();
-    EICheckSTF= true;
-    FrzCheckCount2=0;
-    if(FrzCheckSTF1==0)
+    EICheckSTF=true;
+   /* if(EICheckState==2)
+        EICheckState=0;
+    else 
+       EICheckState++; */
+   // FrzCheckDCount=0;
+    if(EICheckState==0)
     {
         FrzCheckSTF1=1;
+        FrzCheckSTF2=0;
         FrzCheckCount1=0;
+        EICheckState=1;
         TC1_TimerStart(); 
+
     }
-    else
+    else if(EICheckState==1)
     {
+        FrzCheckSTF2=1;
         FrzCheckSTF1=0;
-        FrzPreiod=10000/FrzCheckCount1;
-       // printf("\r\nAC Frz = %dHz", FrzPreiod+1);
-        //FrzPreiod=1000/FrzCheckCount1;
-        //if((FrzPreiod>10)&&(FrzPreiod<300))
-        if(FrzPreiod>20)
-        {
-            TimerBaseCodeTemp=(FrzCheckCount1*240-400*10);
-           // TimerBaseCodeTemp=(FrzCheckCount1*240-400);
-            TimerBaseCode=TimerBaseCodeTemp/10;
-        }
-        else
-        {
-            TimerBaseCode=4400;            
-        }
-        //FrzCheckCount1=0;
-       // TC1_TimerStop();
+        FrzCheckCount2=0;  
+        EICheckState=2;     
+        FrzCheckCountemp1=FrzCheckCount1;
+       // printf("\r\nAC Frz1 = %dHz", FrzPreiod1);
+        TC1_TimerStart(); 
+
+
     }
-    //SET_LEDB_Toggle();
+    else if(EICheckState==2)
+    {
+        FrzCheckSTF2=0;
+        FrzCheckSTF1=1;
+        FrzCheckCount1=0;          
+        EICheckState=1;
+        FrzCheckCountemp2=FrzCheckCount2;
+      //  printf("\r\nAC Frz2 = %dHz", FrzPreiod2);
+        TC1_TimerStart(); 
+        fit_Preiod1(FrzCheckCountemp1,FrzCheckCountemp2);
+
+        
+    }
 }
 
 //1MSTime
 void TC1_Callback_InterruptHandler(TC_TIMER_STATUS status, uintptr_t context)
 {
    // 
-    if(FrzCheckSTF1==1)
+    if((FrzCheckSTF1==1)&&(FrzCheckSTF2==0))
     {
         FrzCheckCount1++;
+    }
+    if((FrzCheckSTF2==1)&&(FrzCheckSTF1==0))
+    {
+        FrzCheckCount2++;
     }
     /*else
     {
@@ -304,14 +327,14 @@ void TC1_Callback_InterruptHandler(TC_TIMER_STATUS status, uintptr_t context)
     }*/
     if(EICheckSTF==true)
     {
-        if(FrzCheckCount2<5000)
+        if(FrzCheckDCount<5000)
         {
-            FrzCheckCount2++;
-        } 
+            FrzCheckDCount++;
+        }
         else
         {
             EICheckSTF=false;
-            FrzCheckCount2=0;
+            FrzCheckDCount=0;
             TC1_TimerStop();
         }
         if(SysTimecount<10000)
@@ -320,16 +343,6 @@ void TC1_Callback_InterruptHandler(TC_TIMER_STATUS status, uintptr_t context)
         }
         else
         {
-            LED_CONTROL_Toggle();
-            if(FrzPreiod>20)
-            {
-               // printf("\r\nAC Frz = %dHz", FrzPreiod);
-              //  printf("\r\nTimecode = %d", TimerBaseCode);
-                // printf("\n\n\rRMS Current: %d", Rms_Data);
-                // printf("\n\n\rRMS_FIT Current: %d", Rms_Dataa);
-            }
-           // printf("\r\nTimecodeNext = %d", TimerBaseCodeStore);
-            //LED_CONTROL_Toggle();
             SysTimecount=0;
         }            
     }
@@ -511,6 +524,7 @@ int current_cal(uint16_t current[], uint32_t off_set)
     uint16_t min_val;                                                           /*!< To find minimum value from current samples */
     uint16_t max_val;                                                           /*!< To find maximum value from current samples */
     uint16_t average;                                                           /*!< To find average of current samples */
+    //uint16_t median;                                                            /*!< To find median from current samples */
     uint16_t AC_Rms_voltage = 0;                                                /*!< AC Rms value from current samples */
     uint16_t DC_Rms_voltage = 0;                                                /*!< DC Rms value from current samples */
     int DC_current =0;                                                          /*!< Total DC current */
@@ -522,16 +536,7 @@ int current_cal(uint16_t current[], uint32_t off_set)
     min_val = current[0];
     max_val = current[0];
     sum2 += current[0];
-    
-    /*printf("\n\r---------------------");
-    printf("\n\r Current Samples: ");// print 200 ADC samples
-    
-    for(uint32_t i=0; i<TOTAL_SAMPLES; i++)
-    {
-        printf("\n\r%d", current[i]);
-       
-    }*/
-           
+   // sorted_current_val[0]= current[0];         
     
     for(uint32_t i=1;i<TOTAL_SAMPLES;i++)                                       /*!< Finding min and max of current samples */
     {
@@ -549,7 +554,6 @@ int current_cal(uint16_t current[], uint32_t off_set)
 		
 		//printf("\n\n\rAC Only");
 		AC_Rms_voltage=Rms_calculation(&current[0])+ off_set;                   /*!< AC RMS voltage calculation */
-        //printf("\r\nAC pre-calibration value: %d", AC_Rms_voltage);
 	   
 		if((AC_Rms_voltage>=45800))
 		  a=19;
@@ -564,7 +568,6 @@ int current_cal(uint16_t current[], uint32_t off_set)
 				  if(AC_Rms_voltage<Adc_calibration[n][1])
 					{
 						a=n;
-                        //printf("\r\n Performing AC calibration using calibration row: %lu",a);
 						break;
 					}
 				}
@@ -584,7 +587,6 @@ int current_cal(uint16_t current[], uint32_t off_set)
 	   // printf("\n\n\rSelftest AC Current ");
 		
 	  DC_Rms_voltage = min_val + (average-min_val);
-      //printf("\r\nDC pre-calibration value: %d", DC_Rms_voltage);
 		
 		//DC_Rms_voltage= 35714;//positive 50mA
 		
@@ -599,7 +601,6 @@ int current_cal(uint16_t current[], uint32_t off_set)
 				if(DC_Rms_voltage<Adc_calibration[n][3])
 				{
 					b=n;
-                    //printf("\r\n Performing DC calibration using calibration row: %lu",b);
 					break;
 				}
 			}
@@ -626,8 +627,6 @@ int current_cal(uint16_t current[], uint32_t off_set)
 				  if(AC_Rms_voltage<Adc_calibration[n][1])
 					{
 						a=n;
-                        //("\r\n Performing AC (+DC offset) calibration using calibration row: %lu",b);
-
 						break;
 					}
 				}
@@ -640,13 +639,8 @@ int current_cal(uint16_t current[], uint32_t off_set)
 		ACC_current=(int16_t)AC_current;            
 		Rms_current = Rms_calculationACDC(fit_Rms(&ACC_current,FrzPreiod),DC_current);
 	}
-    
-        
-    //printf("\r\nFinal RMS Current is : %d",Rms_current);
-    //printf("\n\rCurrent 2 is : %d",DC_current);
     return Rms_current;                                                         /*!< Total RMS Current */
 }
-
 
 /**
  * Function Name : self_test
@@ -664,13 +658,13 @@ uint8_t self_test(void)
     int compare_currentotal=0;
     AC_Flag = 0;
     selftest_ACflag = 0;
-    int st_current = 0, res_current = 0, compare_current=0 ;
+    int st_current = 0, res_current = 0, compare_current=0 ,res_currentotal=0;
     count=0;
     SelfTestSTF1=true;
-    //SET_SelfTestSwitch_Set();//????
+    //SET_SelfTestSwitch_Set();//
    // delay_10ms();
-   // for(uint8_t c=0;c<5;c++)
-   // {
+    for(uint8_t c=0;c<5;c++)
+    {
         for(uint32_t i=0;i<(TOTAL_SAMPLES+1);i++)                                   /*!< Getting 300 samples */
         {
             txData[0]=0x44;                                                          /*!< Reading ADC Value*/
@@ -699,7 +693,9 @@ uint8_t self_test(void)
                     count=0;
                 }
             }
-        }  
+         } 
+        res_currentotal+=res_current;
+        }
         AC_Flag = selftest_ACflag;
         
         for(uint8_t c=0;c<5;c++)
@@ -742,6 +738,7 @@ uint8_t self_test(void)
             compare_currentotal+=st_current;
        }
         //SELF_TEST_Clear();
+        res_current=res_currentotal/5;
         st_current=compare_currentotal/5;
         if((AC_Flag == 1)&& (SELFTEST_CURRENT < 0))
             compare_current = st_current*st_current + res_current*res_current;                             /* Difference current */
@@ -752,8 +749,9 @@ uint8_t self_test(void)
         retval = 1;
     else
         retval = 2;
-    //printf("\n\rRes Current is : %d",res_current);
-   printf("\n\rSelf Test Current is : %d",st_current);
+   printf("\n\rRes Current is : %d",res_current);
+   printf("\n\rst Current is : %d",st_current);
+   printf("\n\rSelf Test Current is : %d",compare_current);
     //SET_SelfTestSwitch_Clear();//???
     //printf("\n\rCompare Current is : %d",compare_current);
     return retval;
@@ -784,14 +782,11 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
     float code; 
     count = 0;
     current_data = ((data1)<<8|data2);                                          /*!< current data value */
-    //printf("\r\n data1: %x", data1);
-    //printf("\r\n data2: %x", data2);
     if(data1 > 0x0F)                                                            /*!< Negative DC */
     {
         current_data=(~(current_data))&0xFFFF;                                  /*!< compliment */
         current_data = -1*current_data;                                         /*!< Negative DC current value */
     }
-    //("\r\nCurrent Data: %x", current_data);
     
     if(cur_type == 0x00)                                                        /*!< 0 mA calibration */
     {
@@ -843,7 +838,7 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
     {
         previous_ac = current_data;
         cal=((4*current_data)+2500);
-        Denomenator=((float)5120/cal);
+        Denomenator=((float)5120/cal);//
         code=(float)Numerator/Denomenator;                                      /*!< Ideal ADC value of set current */
         Adc_calibration[ac_count][0]=code;
         
@@ -947,7 +942,7 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
                  f++;
             }
         }
-        for(uint32_t p=15;p<20;p++)                                             /*!< Storing Data in a buffer*/
+        for(uint32_t p=15;p<21;p++)                                             /*!< Storing Data in a buffer*/
         {
             for(uint32_t q=0;q<4;q++)
             {
@@ -990,7 +985,7 @@ int main ( void )
     __enable_irq();
     count = 0;
     zero_current=0;                                                             
-    calibration_flag =0;                                                        
+    calibration_flag =0;                                          
     SYS_Initialize ( NULL );                                                    /*!< Initialize all modules */
     RS485_UART_RDE_Clear();                                                     /*!< Disable Transmit Enable of RS485*/
     LED_CONTROL_Set();                                                          /*!< LED Off*/
@@ -1008,9 +1003,8 @@ int main ( void )
     TC1_Timer16bitPeriodSet(4800U);
     /* Start the timer channel 0*/
    // TC1_TimerStart();    
-    
+    TC0_Timer16bitPeriodSet(4400U);
     EIC_CallbackRegister(EIC_PIN_2,EIC_User_Handler, 0);
-    printf("\r\nthis is rcm poject V62");
     if(SET_ADDRESS_1_Get()==switch_off && SET_ADDRESS_2_Get()==switch_off)      /*!< For Identifying RCM Address*/
        {
            RCM_Address=0xF1;
@@ -1049,7 +1043,6 @@ int main ( void )
     while(NVMCTRL_IsBusy());                                                    /*Wait for  page Read to complete*/
     
     offset=*(data3);                                                            /*!< Storing Data from buffer*/
-    printf("\r\nOffset: %lu", offset);
     for(uint32_t a1=0;a1<7;a1++)
     {
          for(uint32_t b1=0;b1<4;b1++)
@@ -1075,20 +1068,11 @@ int main ( void )
            z++;
          }
     }
-    for(int q=0; q<20; q++)
-    {
-        for(int r=0; r<4; r++)
-        {
-            printf("\r\nCal Data [%d][%d] = %d",q,r,Adc_calibration[q][r]);
-        }
-    }
     #endif
      
     while ( true )
     { 
-       //printf("\r\nLoop");
-       TimerBaseCodeStore=TimerBaseCode;//
-       TC0_Timer16bitPeriodSet(TimerBaseCode);
+        //TimerBaseCodeStore=TimerBaseCode;
         for(uint8_t ii=0;ii<(RMS_AVG-1);ii++)
         {
             for(uint32_t i=0;i<(TOTAL_SAMPLES+1);i++)                               /*!< Getting 300 samples */
@@ -1122,7 +1106,20 @@ int main ( void )
                 }
             }
             Rms_Data+=Rms_DataAvg;
-            if((FrzPreiod>10)&&(FrzPreiod<1001)&&(EICheckSTF==true))//
+
+           // aa[ii]=Rms_DataAvg;
+           /* if(countaa<RMS_AVG)
+            {
+                aa[countaa++]=Rms_DataAvg;
+            }
+            else
+            {
+                Rms_Data=average(aa,RMS_AVG);
+                countaa=0;
+                
+            }*/
+            
+          /* if((FrzPreiod>10)&&(FrzPreiod<1001)&&(EICheckSTF==true))//
             {
                 if(TimerBaseCodeStore!=TimerBaseCode)
                 {
@@ -1134,19 +1131,18 @@ int main ( void )
             {
                  TC0_Timer16bitPeriodSet(4400U);
                  FrzPreiod=0;
-            }
+            }*/
         }
         Rms_Data=Rms_Data/RMS_AVG;
+
+       // if(FrzPreiod>1)
+      //  Rms_Dataa=fit_Rms(&Rms_Data,FrzPreiod);
         Rms_Dataa=Rms_Data;
-        //printf("\r\nThe very final RMS current: %d", Rms_Dataa);
        // Rms_Data=average(aa,RMS_AVG-1);
-        //printf("\r\nAC Frz = %dHz", FrzPreiod);
-        //printf("\n\n\rRMS Current: %d", Rms_Data);
-        //printf("\n\n\rRMS_FIT Current: %d", Rms_Dataa);
-       // printf("\r\nAC Frz = %dHz", FrzPreiod);
-      //  printf("\n\n\rRMS Current: %d", Rms_Data);
-        
-        
+            
+      //  printf("\r\nAC Frz = %dHz", FrzPreiod);
+      //  printf("\n\n\rRMS_FIT Current: %d", Rms_Dataa);
+        //FFFFF=true;
         if((Rms_Dataa>=6)&&(Rms_Dataa<=15))                                       /*!< Rms Current is greater than 6mA  and less than 15mA LED will toggle*/
         {
             LED_CONTROL_Toggle();                                               /*!< LED Toggle*/         
@@ -1154,7 +1150,7 @@ int main ( void )
         else if (Rms_Dataa>15)                                                   /*!< Rms Current is greater than 15mA LED will Glow*/         
         {
             LED_CONTROL_Clear();                                                /*!< LED ON*/
-            ALERT_CONTROL_OUT_Set();          
+            ALERT_CONTROL_OUT_Set();
         }
         else
         {
@@ -1166,7 +1162,6 @@ int main ( void )
         if(RX_Count==7)                                                         /*!< Received data size size is 7 */
         {
            SERCOM0_USART_Read(&uartRxData[0],7);                                /*!< Read the received data */
-           
            if(uartRxData[0]==0xC0 && uartRxData[6]==0xC0) 
             { 
                 crc_1=crc8(0x00,uartRxData[2]);                                 /*!< CRC calculation */
@@ -1287,7 +1282,7 @@ int main ( void )
                             uartTxData[6]=SLIP_ESC;
                             uartTxData[7]=SLIP_ESC_ESC;
                         }
-
+                       // Rms_Dataa=0;
                         crc_1=crc8(0x00, uartTxData[4]);                        /*!< CRC calculation */
                         crc_2=crc8(crc_1, uartTxData[5]);
                         crc_3=crc8(crc_2, uartTxData[6]);
@@ -1342,18 +1337,6 @@ int main ( void )
         else if(RX_Count==11)
         {
            SERCOM0_USART_Read(&uartRxData[0],11);
-           /*printf("\n\rByte 10: %d",uartRxData[10]);
-           printf("\n\rByte 9: %d",uartRxData[9]);
-           printf("\n\rByte 8: %d",uartRxData[8]);
-           printf("\n\rByte 7: %d",uartRxData[7]);
-           printf("\n\rByte 6: %d",uartRxData[6]);
-           printf("\n\rByte 5: %d",uartRxData[5]);
-           printf("\n\rByte 4: %d",uartRxData[4]);
-           printf("\n\rByte 3: %d",uartRxData[3]);
-           printf("\n\rByte 2: %d",uartRxData[2]);
-           printf("\n\rByte 1: %d",uartRxData[1]);
-           printf("\n\rByte 0: %d",uartRxData[0]);*/
-           
            if(uartRxData[0]==0xC0 && uartRxData[10]==0xC0) 
             { 
                 crc_1=crc8(0x00,uartRxData[2]);                                 /*!< CRC calculation */
@@ -1410,34 +1393,105 @@ int main ( void )
     return ( EXIT_FAILURE );
 }
 
-
-
 int16_t fit_Rms(int16_t *Rvalue,uint16_t FrzPreiod)
 {
     int16_t ret;
     int16_t temp=*Rvalue;
-    //("\r\nPre AC fitment value: %d", temp);
+    //uint8_t ff=7;
     if(FrzPreiod>800)
     {
-        ret=temp*(100+7)/100;
+        if(TypeB8_F==true)
+            ret=temp*(100+8*TypeB7_compensate)/100;
+        else
+            ret=temp*(100+8)/100;
     }
     else if(FrzPreiod>600)
     {
-        ret=temp*(100+5)/100;
+        if(TypeB8_F==true)
+            ret=temp*(100+5*TypeB7_compensate)/100;
+        else
+            ret=temp*(100+5)/100;
     }
     else if(FrzPreiod>400)
     {
-        ret=temp*(100+3)/100;
+        if(TypeB8_F==true)
+            ret=temp*(100+3*TypeB7_compensate)/100;
+        else
+            ret=temp*(100+3)/100;
     }
     else if(FrzPreiod>200)    
     {
-        ret=temp*(100+1)/100;
+        if(TypeB8_F==true)
+            ret=temp*(100+1*TypeB7_compensate)/100;
+        else
+            ret=temp*(100+1)/100;
     }
     else
         ret= temp;
-    //printf("\r\nPost AC fitment value: %d", ret);
     return (ret);
 } 
+
+void fit_Preiod1(uint16_t m,uint16_t n)//m=100(100Hz) n=200(50Hz)
+{
+   // float dvalue;
+    float t;
+    uint16_t Time0preiod;    
+   if(m>=n)
+   {
+        t=m*10/n;
+        if((t>15)&&(t<35))
+        {
+            Time0preiod=m+n;
+            TypeB8_F=true;
+        }
+        else
+        {
+            Time0preiod=m;   
+            TypeB8_F=false;
+        }
+   }
+   else
+   {
+        t=n*10/m;
+        if((t>15)&&(t<35))
+        {
+            Time0preiod=m+n;
+            TypeB8_F=true;
+        }
+        else
+        {
+           Time0preiod=n; 
+           TypeB8_F=false;
+        }
+   }
+    FrzPreiod=10000/Time0preiod;
+    if(FrzPreiod>250)
+        Time0preiod*=5;
+    if(FrzPreiod>20)
+    {
+        TimerBaseCodeTemp=(Time0preiod*240-400*10);
+        TimerBaseCode=TimerBaseCodeTemp/10;
+    }
+    else
+    {
+        TimerBaseCode=4400;            
+    }        
+   /* if(FrzPreiod>500)
+    {
+        TimerBaseCodeTemp=(Time0preiod*480-160*10);
+        TimerBaseCode=TimerBaseCodeTemp/10;
+    }
+    else if(FrzPreiod>20)
+    {
+        TimerBaseCodeTemp=(Time0preiod*240-400*10);
+        TimerBaseCode=TimerBaseCodeTemp/10;
+    }
+    else
+    {
+        TimerBaseCode=4400;            
+    }*/
+    TC0_Timer16bitPeriodSet(TimerBaseCode);
+}
 /*******************************************************************************
  End of File
 */
