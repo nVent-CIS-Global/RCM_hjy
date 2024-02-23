@@ -104,15 +104,15 @@ static volatile bool EICheckSTF = false;
 //static volatile bool FFFFF = false;
 uint16_t EICheckState=0;
 uint32_t SysTimecount=0;
-uint16_t FrzCheckCount1=0;
-uint16_t FrzCheckCount2=0;
-uint16_t FrzCheckCountemp1=0;
-uint16_t FrzCheckCountemp2=0;
+uint16_t FrzCheckCount1=10000;
+uint16_t FrzCheckCount2=10000;
+//uint16_t FrzCheckCountemp1=10000;
+//uint16_t FrzCheckCountemp2=10000;
 uint16_t FrzCheckDCount=0;
 uint16_t FrzPreiod=0;
 uint16_t FrzPreiod1=0;
 uint16_t FrzPreiod2=0;
-uint16_t TimerBaseCode=0;
+uint16_t TimerBaseCode=4800;
 uint16_t TimerBaseCodeStore=0;
 uint32_t TimerBaseCodeTemp=0;
 uint16_t aa[RMS_AVG];
@@ -265,28 +265,31 @@ void usartWriteEventHandler(SERCOM_USART_EVENT event, uintptr_t context )
 void EIC_User_Handler(uintptr_t context)
 {
    // LED_CONTROL_Toggle();
+    TC1_TimerStop();
     EICheckSTF=true;
+    
    /* if(EICheckState==2)
         EICheckState=0;
     else 
        EICheckState++; */
    // FrzCheckDCount=0;
-    if(EICheckState==0)
+    if(EICheckState==0)                                     //this is the sample period update state
     {
-        FrzCheckSTF1=1;
+        fit_Preiod1(FrzCheckCount1,FrzCheckCount2);   //initial value of 10000 will lead to a sample period of 100us
+        FrzCheckSTF1=0;
         FrzCheckSTF2=0;
         FrzCheckCount1=0;
+        FrzCheckCount2=0;
         EICheckState=1;
-        TC1_TimerStart(); 
+        //TC1_TimerStart(); 
 
     }
     else if(EICheckState==1)
     {
         FrzCheckSTF2=1;
         FrzCheckSTF1=0;
-        FrzCheckCount2=0;  
         EICheckState=2;     
-        FrzCheckCountemp1=FrzCheckCount1;
+        //FrzCheckCountemp1=FrzCheckCount1;
        // printf("\r\nAC Frz1 = %dHz", FrzPreiod1);
         TC1_TimerStart(); 
 
@@ -296,12 +299,12 @@ void EIC_User_Handler(uintptr_t context)
     {
         FrzCheckSTF2=0;
         FrzCheckSTF1=1;
-        FrzCheckCount1=0;          
-        EICheckState=1;
-        FrzCheckCountemp2=FrzCheckCount2;
+        //FrzCheckCount1=0;          
+        EICheckState=0;
+        //FrzCheckCountemp2=FrzCheckCount2;
       //  printf("\r\nAC Frz2 = %dHz", FrzPreiod2);
         TC1_TimerStart(); 
-        fit_Preiod1(FrzCheckCountemp1,FrzCheckCountemp2);
+        //fit_Preiod1(FrzCheckCountemp1,FrzCheckCountemp2);
 
         
     }
@@ -311,40 +314,13 @@ void EIC_User_Handler(uintptr_t context)
 void TC1_Callback_InterruptHandler(TC_TIMER_STATUS status, uintptr_t context)
 {
    // 
-    if((FrzCheckSTF1==1)&&(FrzCheckSTF2==0))
+    if((FrzCheckSTF1==0)&&(FrzCheckSTF2==1))
     {
         FrzCheckCount1++;
     }
-    if((FrzCheckSTF2==1)&&(FrzCheckSTF1==0))
+    if((FrzCheckSTF1==1)&&(FrzCheckSTF2==0))
     {
-        FrzCheckCount2++;
-    }
-    /*else
-    {
-       // FrzPreiod=1000/FrzCheckCount1;     
-        FrzCheckCount1=0;
-       // printf("\r\nAC Frz is %d", FrzPreiod);
-    }*/
-    if(EICheckSTF==true)
-    {
-        if(FrzCheckDCount<5000)
-        {
-            FrzCheckDCount++;
-        }
-        else
-        {
-            EICheckSTF=false;
-            FrzCheckDCount=0;
-            TC1_TimerStop();
-        }
-        if(SysTimecount<10000)
-        {
-            SysTimecount++;
-        }
-        else
-        {
-            SysTimecount=0;
-        }            
+        FrzCheckCount2++;           
     }
 }
 //Max Min
@@ -406,16 +382,16 @@ void delay_10ms(void)
  */
 void delay_400us(void)
 {
-    LED_CONTROL_Set();
+    //LED_CONTROL_Set();
     while(counter<4)                                                                /*!< Wait for 10 ms*/
     {
         TC0_TimerStart();                                                       /*!< Enable the TC counter */
         while(!TC0_TimerPeriodHasExpired());                                    /*!< wait for timer(100us) to Expire*/
         TC0_TimerStop();                                                        /*!< Disable the TC counter */
-        LED_CONTROL_Toggle();
+        //LED_CONTROL_Toggle();
         counter++;
     }
-    LED_CONTROL_Set();
+    //LED_CONTROL_Set();
     counter=0;
 }
 
@@ -1000,10 +976,10 @@ int main ( void )
     SERCOM0_USART_WriteCallbackRegister(usartWriteEventHandler, (uintptr_t)NULL);
     /* Register callback function for TC3 period interrupt */
     TC1_TimerCallbackRegister(TC1_Callback_InterruptHandler, (uintptr_t)NULL);
-    TC1_Timer16bitPeriodSet(4800U);
+    TC1_Timer16bitPeriodSet(1200U);
     /* Start the timer channel 0*/
    // TC1_TimerStart();    
-    TC0_Timer16bitPeriodSet(4400U);
+    TC0_Timer16bitPeriodSet(4800U);
     EIC_CallbackRegister(EIC_PIN_2,EIC_User_Handler, 0);
     if(SET_ADDRESS_1_Get()==switch_off && SET_ADDRESS_2_Get()==switch_off)      /*!< For Identifying RCM Address*/
        {
@@ -1075,20 +1051,21 @@ int main ( void )
         //TimerBaseCodeStore=TimerBaseCode;
         for(uint8_t ii=0;ii<(RMS_AVG-1);ii++)
         {
+            TC0_Timer16bitPeriodSet(TimerBaseCode);
+            //printf("\r\nTimerBaseCode: %d", TimerBaseCode);
             for(uint32_t i=0;i<(TOTAL_SAMPLES+1);i++)                               /*!< Getting 300 samples */
             //for(uint32_t i=0;i<(50+1);i++) 
             {
+                TC0_TimerStart();
                 txData[0]=0x44;                                                      /*!< Reading ADC Value*/
                 txData[1]=0x00;
                 ADC_CS_Clear();                                                      /*!< CS Pin Low */
-                SERCOM1_SPI_WriteRead(txData, txSize1,rxData,rxSize);                /*!< SPI Write Read */
-                 TC0_TimerStart();                                                    /*!< Enable the TC counter */
+                LED_CONTROL_Toggle();
+                SERCOM1_SPI_WriteRead(txData, txSize1,rxData,rxSize);                /*!< SPI Write Read */                 
+                                                                                    /*!< Enable the TC counter */
                  
                 while(isTransferDone!=true);                                         /*!< wait for SPI write To complete*/
-                
-                while(!TC0_TimerPeriodHasExpired());                                 /*!< wait for timer(100us) to Expire*/
-           
-                TC0_TimerStop();                                                     /*!< Disable the TC counter */
+                                                                                    /*!< Disable the TC counter */
                 if (isTransferDone==true)
                 {
                
@@ -1100,11 +1077,14 @@ int main ( void )
                     }
                     if(count==TOTAL_SAMPLES)                                          /*!< reading 200 ADC samples and doing rms calculations*/
                     { 
-                        Rms_DataAvg = (int) current_cal(&Current_Reading[0],offset);
+                        //Rms_DataAvg = (int) current_cal(&Current_Reading[0],offset);
                         count=0;
                     }
                 }
+                while(!TC0_TimerPeriodHasExpired());                                 /*!< wait for timer(100us) to Expire*/           
+                TC0_TimerStop();   
             }
+            Rms_DataAvg = (int) current_cal(&Current_Reading[0],offset);
             Rms_Data+=Rms_DataAvg;
 
            // aa[ii]=Rms_DataAvg;
@@ -1145,16 +1125,16 @@ int main ( void )
         //FFFFF=true;
         if((Rms_Dataa>=6)&&(Rms_Dataa<=15))                                       /*!< Rms Current is greater than 6mA  and less than 15mA LED will toggle*/
         {
-            LED_CONTROL_Toggle();                                               /*!< LED Toggle*/         
+            //LED_CONTROL_Toggle();                                               /*!< LED Toggle*/         
         }
         else if (Rms_Dataa>15)                                                   /*!< Rms Current is greater than 15mA LED will Glow*/         
         {
-            LED_CONTROL_Clear();                                                /*!< LED ON*/
+            //LED_CONTROL_Clear();                                                /*!< LED ON*/
             ALERT_CONTROL_OUT_Set();
         }
         else
         {
-            LED_CONTROL_Set();                                                  /*!< LED OFF*/
+            //LED_CONTROL_Set();                                                  /*!< LED OFF*/
             ALERT_CONTROL_OUT_Clear();
         }        
         
@@ -1435,7 +1415,7 @@ void fit_Preiod1(uint16_t m,uint16_t n)//m=100(100Hz) n=200(50Hz)
 {
    // float dvalue;
     float t;
-    uint16_t Time0preiod;    
+    float Time0preiod;    
    if(m>=n)
    {
         t=m*10/n;
@@ -1446,7 +1426,7 @@ void fit_Preiod1(uint16_t m,uint16_t n)//m=100(100Hz) n=200(50Hz)
         }
         else
         {
-            Time0preiod=m;   
+            Time0preiod= (float)(m+n)/2;   
             TypeB8_F=false;
         }
    }
@@ -1460,17 +1440,16 @@ void fit_Preiod1(uint16_t m,uint16_t n)//m=100(100Hz) n=200(50Hz)
         }
         else
         {
-           Time0preiod=n; 
+           Time0preiod= (float)(m+n)/2; 
            TypeB8_F=false;
         }
    }
-    FrzPreiod=10000/Time0preiod;
+    FrzPreiod= 40000/Time0preiod;
     if(FrzPreiod>250)
         Time0preiod*=5;
     if(FrzPreiod>20)
     {
-        TimerBaseCodeTemp=(Time0preiod*240-400*10);
-        TimerBaseCode=TimerBaseCodeTemp/10;
+        TimerBaseCode=(Time0preiod*60-1000)/10;
     }
     else
     {
@@ -1490,7 +1469,8 @@ void fit_Preiod1(uint16_t m,uint16_t n)//m=100(100Hz) n=200(50Hz)
     {
         TimerBaseCode=4400;            
     }*/
-    TC0_Timer16bitPeriodSet(TimerBaseCode);
+    //TC0_Timer16bitPeriodSet(TimerBaseCode);
+    //printf("\r\nTimerBaseCode:%d",TimerBaseCode);
 }
 /*******************************************************************************
  End of File
