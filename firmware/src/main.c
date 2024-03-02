@@ -98,21 +98,20 @@ uint16_t counters =0;                                                           
 
 /*********************************************************/
 static volatile bool SelfTestSTF1 = false;
-static volatile bool FrzCheckSTF1 = false;
-static volatile bool FrzCheckSTF2 = false;
 static volatile bool EICheckSTF = false;
+static volatile bool freqcountenable = false;
 //static volatile bool FFFFF = false;
 uint16_t EICheckState=0;
 uint32_t SysTimecount=0;
-uint16_t FrzCheckCount1=10000;
-uint16_t FrzCheckCount2=10000;
-//uint16_t FrzCheckCountemp1=10000;
-//uint16_t FrzCheckCountemp2=10000;
+uint16_t FrzCheckCount1=0;
+uint16_t FrzCheckCount2=0;
+uint16_t FrzCheckCount1Store = 4000;                //corresponds to a 10Hz signal
+uint16_t FrzCheckCount2Store = 4000;
 uint16_t FrzCheckDCount=0;
 uint16_t FrzPreiod=0;
 uint16_t FrzPreiod1=0;
 uint16_t FrzPreiod2=0;
-uint16_t TimerBaseCode=4800;
+uint16_t TimerBaseCode=4400;
 uint16_t TimerBaseCodeStore=0;
 uint32_t TimerBaseCodeTemp=0;
 uint16_t aa[RMS_AVG];
@@ -264,63 +263,56 @@ void usartWriteEventHandler(SERCOM_USART_EVENT event, uintptr_t context )
 
 void EIC_User_Handler(uintptr_t context)
 {
-   // LED_CONTROL_Toggle();
-    TC1_TimerStop();
     EICheckSTF=true;
     
-   /* if(EICheckState==2)
-        EICheckState=0;
-    else 
-       EICheckState++; */
-   // FrzCheckDCount=0;
-    if(EICheckState==0)                                     //this is the sample period update state
+    if(EICheckState==0)                                 //Idle State, not yet measuring frequency, ignoring startup glitches
     {
-        fit_Preiod1(FrzCheckCount1,FrzCheckCount2);   //initial value of 10000 will lead to a sample period of 100us
-        FrzCheckSTF1=0;
-        FrzCheckSTF2=0;
-        FrzCheckCount1=0;
-        FrzCheckCount2=0;
-        EICheckState=1;
-        //TC1_TimerStart(); 
+        if(freqcountenable)
+        {
+            EICheckState=1;                             //Start counting for period 1
+            TC1_TimerStart();
+        } 
 
     }
-    else if(EICheckState==1)
+    else if(EICheckState==1)                            //Store result for period 1 and start counting for period 2
     {
-        FrzCheckSTF2=1;
-        FrzCheckSTF1=0;
+        FrzCheckCount1Store = FrzCheckCount1;
+        FrzCheckCount1 = 0;
         EICheckState=2;     
-        //FrzCheckCountemp1=FrzCheckCount1;
-       // printf("\r\nAC Frz1 = %dHz", FrzPreiod1);
-        TC1_TimerStart(); 
-
-
+        //TC1_TimerStart(); 
     }
+    
     else if(EICheckState==2)
     {
-        FrzCheckSTF2=0;
-        FrzCheckSTF1=1;
-        //FrzCheckCount1=0;          
-        EICheckState=0;
-        //FrzCheckCountemp2=FrzCheckCount2;
-      //  printf("\r\nAC Frz2 = %dHz", FrzPreiod2);
-        TC1_TimerStart(); 
-        //fit_Preiod1(FrzCheckCountemp1,FrzCheckCountemp2);
-
-        
+        FrzCheckCount2Store = FrzCheckCount2;           //Store result for period 2 and start counting for period 1
+        FrzCheckCount2 = 0;        
+        EICheckState=1;
+        //TC1_TimerStart(); 
     }
 }
 
-//1MSTime
 void TC1_Callback_InterruptHandler(TC_TIMER_STATUS status, uintptr_t context)
 {
    // 
-    if((FrzCheckSTF1==0)&&(FrzCheckSTF2==1))
+    if((EICheckState==1))
     {
         FrzCheckCount1++;
+        if (FrzCheckCount1 > 4000)                       //If an edge is not detected within 50ms, then freq is < 10Hz, treat as DC
+        {
+            FrzCheckCount1Store = FrzCheckCount1;
+            FrzCheckCount1 = 0;
+            EICheckState=2;  
+        }
     }
-    if((FrzCheckSTF1==1)&&(FrzCheckSTF2==0))
+    if((EICheckState==2))            //If an edge is not detected within 50ms, then freq is < 10Hz, treat as DC
     {
-        FrzCheckCount2++;           
+        FrzCheckCount2++; 
+        if (FrzCheckCount2 > 4000)
+        {
+            FrzCheckCount2Store = FrzCheckCount2;
+            FrzCheckCount2 = 0;
+            EICheckState=1;  
+        }
     }
 }
 //Max Min
@@ -641,20 +633,19 @@ uint8_t self_test(void)
    // delay_10ms();
     for(uint8_t c=0;c<5;c++)
     {
+        fit_Preiod1(FrzCheckCount1Store,FrzCheckCount2Store);
+        TC0_Timer16bitPeriodSet(TimerBaseCode);
+        
         for(uint32_t i=0;i<(TOTAL_SAMPLES+1);i++)                                   /*!< Getting 300 samples */
         {
+            TC0_TimerStart();                                                        /*!< Enable the TC counter */
             txData[0]=0x44;                                                          /*!< Reading ADC Value*/
             txData[1]=0x00;
-
             ADC_CS_Clear();                                                          /*!< CS Pin Low */
             SERCOM1_SPI_WriteRead(txData, txSize1,rxData,rxSize);                    /*!< SPI Write Read */
-            TC0_TimerStart();                                                        /*!< Enable the TC counter */
-
+            
             while(isTransferDone!=true);                                             /*!< wait for SPI write To complete*/
 
-            while(!TC0_TimerPeriodHasExpired());                                     /*!< wait for timer(100us) to Expire*/
-
-            TC0_TimerStop();                                                         /*!< Disable the TC counter */
             if (isTransferDone==true)
             {
                 isTransferDone=false;
@@ -665,69 +656,75 @@ uint8_t self_test(void)
                 }
                 if(count == TOTAL_SAMPLES)                                                    /*!< reading 300 ADC samples and doing rms calculations*/
                 {
-                    res_current = current_cal(&Current_Reading[0], offset);             /*!< RMS calculation */
+                    //res_current = current_cal(&Current_Reading[0], offset);             /*!< RMS calculation */
                     count=0;
                 }
             }
-         } 
+            while(!TC0_TimerPeriodHasExpired());                                     /*!< wait for timer(100us) to Expire*/
+            TC0_TimerStop();                                                         /*!< Disable the TC counter */
+        } 
+        res_current = current_cal(&Current_Reading[0], offset);             /*!< RMS calculation */
         res_currentotal+=res_current;
-        }
-        AC_Flag = selftest_ACflag;
+    }
+    AC_Flag = selftest_ACflag;
         
-        for(uint8_t c=0;c<5;c++)
-        {    
-            SELF_TEST_Set();                                                            /*!< Self test pin high */
-            delay_10ms();                                                               /*!< Delay of 10ms */   
+    SELF_TEST_Set();                                                            /*!< Self test pin high */
+    delay_100ms();
     
-            for(uint32_t i=0;i<(TOTAL_SAMPLES+1);i++)                                   /*!< Getting 300 samples */
+    for(uint8_t c=0;c<5;c++)
+    {    
+                                                              /*!< Delay of 100ms to allow proper frequency measurement*/  
+        fit_Preiod1(FrzCheckCount1Store,FrzCheckCount2Store);
+        TC0_Timer16bitPeriodSet(TimerBaseCode);
+
+        for(uint32_t i=0;i<(TOTAL_SAMPLES+1);i++)                                   /*!< Getting 300 samples */
+        {
+            TC0_TimerStart();                                                        /*!< Enable the TC counter */
+            txData[0]=0x44;                                                          /*!< Reading ADC Value*/
+            txData[1]=0x00;
+            ADC_CS_Clear();                                                          /*!< CS Pin Low */
+            SERCOM1_SPI_WriteRead(txData, txSize1,rxData,rxSize);                    /*!< SPI Write Read */          
+
+            while(isTransferDone!=true);                                             /*!< wait for SPI write To complete*/
+
+            if (isTransferDone==true)
             {
-                txData[0]=0x44;                                                          /*!< Reading ADC Value*/
-                txData[1]=0x00;
-
-                ADC_CS_Clear();                                                          /*!< CS Pin Low */
-                SERCOM1_SPI_WriteRead(txData, txSize1,rxData,rxSize);                    /*!< SPI Write Read */
-                TC0_TimerStart();                                                        /*!< Enable the TC counter */
-
-                while(isTransferDone!=true);                                             /*!< wait for SPI write To complete*/
-
-                while(!TC0_TimerPeriodHasExpired());                                     /*!< wait for timer(100us) to Expire*/
-
-                TC0_TimerStop();                                                         /*!< Disable the TC counter */
-                if (isTransferDone==true)
+                isTransferDone=false;
+                if(i>0)
                 {
-                    isTransferDone=false;
-                    if(i>0)
-                    {
-                        Current_Reading[count]=(rxData[0]<< 8) | rxData[1];               /*!< storing received data */
-                        count++;
-                    }
-                    if(count == TOTAL_SAMPLES)                                          /*!< reading 300 ADC samples and doing rms calculations*/
-                    {
-                        st_current = current_cal(&Current_Reading[0], offset);           /*!< RMS calculation */
-                        count=0;
-                        SELF_TEST_Clear();                                               /*!< Self test pin low */
-                        SelfTestSTF1=0;
-                    }
+                    Current_Reading[count]=(rxData[0]<< 8) | rxData[1];               /*!< storing received data */
+                    count++;
                 }
-            } 
-        //if(c>1)
-            compare_currentotal+=st_current;
-       }
-        //SELF_TEST_Clear();
-        res_current=res_currentotal/5;
-        st_current=compare_currentotal/5;
-        if((AC_Flag == 1)&& (SELFTEST_CURRENT < 0))
-            compare_current = st_current*st_current + res_current*res_current;                             /* Difference current */
-        else
-            compare_current = st_current*st_current - res_current*res_current;                             /* Difference current */
-       compare_current=DIVAS_SquareRoot(compare_current);
+                if(count == TOTAL_SAMPLES)                                            /*!< reading 300 ADC samples and doing rms calculations*/
+                {
+                    //st_current = current_cal(&Current_Reading[0], offset);          /*!< RMS calculation */
+                    count=0;
+                    SelfTestSTF1=0;
+                }
+            }
+            while(!TC0_TimerPeriodHasExpired());                                     /*!< wait for timer(100us) to Expire*/
+            TC0_TimerStop();                                                         /*!< Disable the TC counter */
+        } 
+        st_current = current_cal(&Current_Reading[0], offset);                       /*!< RMS calculation */
+        compare_currentotal+=st_current;
+    }
+
+    SELF_TEST_Clear();
+
+    res_current=res_currentotal/5;
+    st_current=compare_currentotal/5;
+    if((AC_Flag == 1)&& (SELFTEST_CURRENT < 0))
+        compare_current = st_current*st_current + res_current*res_current;                             /* Difference current */
+    else
+        compare_current = st_current*st_current - res_current*res_current;                             /* Difference current */
+    compare_current=DIVAS_SquareRoot(compare_current);
     if((compare_current >= (SELFTEST_CURRENT - SELFTEST_TOLERANCE ) && (compare_current <= (SELFTEST_CURRENT + SELFTEST_TOLERANCE))))    /*!< Self test current comparison */     
         retval = 1;
     else
         retval = 2;
-   printf("\n\rRes Current is : %d",res_current);
-   printf("\n\rst Current is : %d",st_current);
-   printf("\n\rSelf Test Current is : %d",compare_current);
+    printf("\n\rRes Current is : %d",res_current);
+    printf("\n\rst Current is : %d",st_current);
+    printf("\n\rSelf Test Current is : %d",compare_current);
     //SET_SelfTestSwitch_Clear();//???
     //printf("\n\rCompare Current is : %d",compare_current);
     return retval;
@@ -768,21 +765,17 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
     {
         for(uint32_t d=0;d<ZERO_CALIBRATION_SAMPLES;d++)                                              /*!< sampling 10 times */
         {
+           fit_Preiod1(FrzCheckCount1Store,FrzCheckCount2Store);
+           TC0_Timer16bitPeriodSet(TimerBaseCode);
            for(uint32_t c=0;c<(TOTAL_SAMPLES+1);c++)                            /*!< Getting 300 samples */
             {
-              
+                TC0_TimerStart();
                 txData[0]=0x00;
                 txData[1]=0x00;
                 ADC_CS_Clear();                                                 /*!< CS Pin low */
                 SERCOM1_SPI_WriteRead(txData,txSize1, rxData, rxSize);          /*!< SPI Write Read */
-                
-                TC0_TimerStart();                                               /*!< Enable the TC counter */
-
+               
                 while(isTransferDone!=true);                                    /*!< check if SPI transfer is completed */
-
-                while(!TC0_TimerPeriodHasExpired());                            /*!< check if timer period interrupt flag is set */
-
-                TC0_TimerStop();                                                /*!< Disable the TC counter */
 
                 if (isTransferDone==true)
                 {
@@ -794,12 +787,15 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
                     }
                     if(count==TOTAL_SAMPLES)
                     {
-                       sum1=sum1+Rms_calculation1(&Current_Reading[0]);         /*!< RMS calculation */
+                       //sum1=sum1+Rms_calculation1(&Current_Reading[0]);         /*!< RMS calculation */
                        count=0;
                     }
                 }
+                while(!TC0_TimerPeriodHasExpired());                            /*!< check if timer period interrupt flag is set */
+                TC0_TimerStop();                                                /*!< Disable the TC counter */
             }
         }
+        sum1=sum1+Rms_calculation1(&Current_Reading[0]);
         zero_current=1;
         offset=sum1/ZERO_CALIBRATION_SAMPLES;                                    /*!< divide by no of samples */
         ac_count=0;                                                             /*!< AC calibration table index to 0 */
@@ -818,19 +814,18 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
         code=(float)Numerator/Denomenator;                                      /*!< Ideal ADC value of set current */
         Adc_calibration[ac_count][0]=code;
         
+        fit_Preiod1(FrzCheckCount1Store,FrzCheckCount2Store);
+        TC0_Timer16bitPeriodSet(TimerBaseCode);
+        
         for(uint32_t c=0;c<(TOTAL_SAMPLES+1);c++)                               /*!< Getting 300 samples */
         {
-           txData[0]=0x00;
-           txData[1]=0x00;
-           ADC_CS_Clear();                                                      /*!< CS pin set low */
-           SERCOM1_SPI_WriteRead(txData,txSize1, rxData, rxSize);               /*!< SPI Write Read */
-           TC0_TimerStart();                                                    /*!< Enable the TC counter */
+            TC0_TimerStart();
+            txData[0]=0x00;
+            txData[1]=0x00;
+            ADC_CS_Clear();                                                      /*!< CS pin set low */
+            SERCOM1_SPI_WriteRead(txData,txSize1, rxData, rxSize);               /*!< SPI Write Read */
 
-           while(isTransferDone!=true);                                         /*!< wait for SPI write to complete*/    
-
-           while(! TC0_TimerPeriodHasExpired());                                /*!< wait for Timer to Expire*/ 
-
-           TC0_TimerStop();                                                     /*!< Disable the TC counter */
+            while(isTransferDone!=true);                                         /*!< wait for SPI write to complete*/    
 
             if (isTransferDone==true)
             {
@@ -842,12 +837,16 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
                 }
                 if(count==TOTAL_SAMPLES)
                 {
-                    Rms_voltage1=Rms_calculation(&Current_Reading[0]);          /*!< RMS calculation */
-                    Adc_calibration[ac_count][1]=Rms_voltage1+offset;           /*!< storing in ADC calibration table */
+                    //Rms_voltage1=Rms_calculation(&Current_Reading[0]);          /*!< RMS calculation */
+                    //Adc_calibration[ac_count][1]=Rms_voltage1+offset;           /*!< storing in ADC calibration table */
                     count=0;
                 }
             }
+           while(! TC0_TimerPeriodHasExpired());                                /*!< wait for Timer to Expire*/ 
+           TC0_TimerStop();                                                     /*!< Disable the TC counter */
         }
+        Rms_voltage1=Rms_calculation(&Current_Reading[0]);          /*!< RMS calculation */
+        Adc_calibration[ac_count][1]=Rms_voltage1+offset;           /*!< storing in ADC calibration table */
         calibration_flag = 1;                                                   /*!< Set the flag for correct data */
         ac_count++;
     }
@@ -864,19 +863,18 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
         code=(float)Numerator/(float)Denomenator;                               /*!< Ideal ADC value of set current */
         Adc_calibration[dc_count][2]=code;
         
+        fit_Preiod1(FrzCheckCount1Store,FrzCheckCount2Store);
+        TC0_Timer16bitPeriodSet(TimerBaseCode);
+        
         for(uint32_t c=0;c<(TOTAL_SAMPLES+1);c++)                               /*!< Getting 300 samples */
         {
+            TC0_TimerStart();                                                   /*!< Enable the TC counter */
             txData[0]=0x00;
             txData[1]=0x00;
             ADC_CS_Clear();                                                     /*!< CS pin LOW */
             SERCOM1_SPI_WriteRead(txData,txSize1, rxData, rxSize);              /*!< SPI Write Read */
-            TC0_TimerStart();                                                   /*!< Enable the TC counter */
-
+            
             while(isTransferDone!=true);                                        /*!< wait for spi write to complete*/    
-
-            while(! TC0_TimerPeriodHasExpired());                               /*!<wait for Timer to Expire*/ 
-
-            TC0_TimerStop();                                                    /*!< Disable the TC counter */
 
             if (isTransferDone==true)
             {
@@ -888,12 +886,16 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
                 }
                 if(count==TOTAL_SAMPLES)
                 {
-                    Rms_voltage1=Rms_calculation1(&Current_Reading[0]);         /*!< RMS calculation */
-                    Adc_calibration[dc_count][3]= Rms_voltage1;                 /*!< storing in adc calibration table */
+                    //Rms_voltage1=Rms_calculation1(&Current_Reading[0]);         /*!< RMS calculation */
+                    //Adc_calibration[dc_count][3]= Rms_voltage1;                 /*!< storing in adc calibration table */
                     count=0;
                 }
             }
+            while(! TC0_TimerPeriodHasExpired());                               /*!<wait for Timer to Expire*/ 
+            TC0_TimerStop();                                                    /*!< Disable the TC counter */
         } 
+        Rms_voltage1=Rms_calculation1(&Current_Reading[0]);                     /*!< RMS calculation */
+        Adc_calibration[dc_count][3]= Rms_voltage1;                             /*!< storing in adc calibration table */
         calibration_flag = 1;                                                   /*!< Set the flag for correct data */
         dc_count++;
     }
@@ -1045,12 +1047,15 @@ int main ( void )
          }
     }
     #endif
+
+    freqcountenable = true;                                                     //enable the frequency counter sampling
      
     while ( true )
     { 
         //TimerBaseCodeStore=TimerBaseCode;
         for(uint8_t ii=0;ii<(RMS_AVG-1);ii++)
         {
+            fit_Preiod1(FrzCheckCount1Store,FrzCheckCount2Store);
             TC0_Timer16bitPeriodSet(TimerBaseCode);
             //printf("\r\nTimerBaseCode: %d", TimerBaseCode);
             for(uint32_t i=0;i<(TOTAL_SAMPLES+1);i++)                               /*!< Getting 300 samples */
@@ -1414,8 +1419,8 @@ int16_t fit_Rms(int16_t *Rvalue,uint16_t FrzPreiod)
 void fit_Preiod1(uint16_t m,uint16_t n)//m=100(100Hz) n=200(50Hz)
 {
    // float dvalue;
-    float t;
-    float Time0preiod;    
+   float t;
+   float Time0preiod;    
    if(m>=n)
    {
         t=m*10/n;
@@ -1447,7 +1452,7 @@ void fit_Preiod1(uint16_t m,uint16_t n)//m=100(100Hz) n=200(50Hz)
     FrzPreiod= 40000/Time0preiod;
     if(FrzPreiod>250)
         Time0preiod*=5;
-    if(FrzPreiod>20)
+    if(FrzPreiod>10)
     {
         TimerBaseCode=(Time0preiod*60-1000)/10;
     }
