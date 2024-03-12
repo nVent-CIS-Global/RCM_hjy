@@ -50,7 +50,7 @@
 #define Status                0x01                    
 #define status_byte1          0x00
 #define status_byte2          0x00
-#define Firmware_version      35                                                /*indicates firmware version*/
+#define Firmware_version      36                                                /*indicates firmware version*/
 #define Hardware_version      0x10                                              /*indicates hardware version*/
 #define CALIBRATION_SAMPLES   20                                                /*Total no of calibration data*/
 #define TOTAL_SAMPLES         200                                               /*Total no of samples*/
@@ -125,28 +125,28 @@ void fit_Preiod1(uint16_t m, uint16_t n);
 void EIC_User_Handler(uintptr_t context);   //????????
 #define _calibration_table                                                      /*!<Define predetermined calibration table */
 #ifdef _calibration_table
-uint32_t offset= 0x7f4c;                                                         /*!< predetermined offset value */                                                                             /*!< predetermined calibration array */
+uint32_t offset= 32545;                                                         /*!< predetermined offset value */                                                                             /*!< predetermined calibration array */
 uint16_t Adc_calibration[CALIBRATION_SAMPLES][4]={   
-{32102,32702,19148,19650},
-{32204,32794,21708,22219},
-{32307,32886,23808,24344},
-{32409,33003,25856,26410},
-{32512,33097,27904,28444},
-{32768,33322,28979,29520},
-{33024,33590,29951,30490},
-{33280,33821,30976,31532},
-{33536,34076,31488,32057},
-{34048,34581,31744,32282},
-{34560,35063,32255,32805},
-{35072,35541,32512,33048},
-{36096,36525,33024,33574},
-{37120,37540,34048,34585},
-{38144,38538,35072,35632},
-{39168,39548,36096,36649},
-{40192,40529,37120,37677},
-{41216,41538,39168,39707},
-{42240,42595,41216,41784},
-{44800,45090,44851,45457}
+{32102,32666,19200,19713},
+{32204,32747,21760,22297},
+{32307,32844,23808,24333},
+{32409,32938,25856,26395},
+{32512,33049,27904,28445},
+{32768,33288,29030,29576},
+{33024,33534,29951,30497},
+{33280,33785,30976,31533},
+{33536,34028,31488,32018},
+{34048,34529,31744,32296},
+{34560,35028,32255,32823},
+{35072,35506,32512,33073},
+{36096,36496,33024,33598},
+{37120,37496,34048,34609},
+{38144,38507,35072,35649},
+{39168,39482,36096,36669},
+{40192,40483,38144,38726},
+{41216,41531,40192,40763},
+{42240,42550,42240,42826},
+{44800,45065,44800,45375}
 };
 #endif
 
@@ -764,10 +764,10 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
     if(cur_type == 0x00)                                                        /*!< 0 mA calibration */
     {
         for(uint32_t d=0;d<ZERO_CALIBRATION_SAMPLES;d++)                                              /*!< sampling 10 times */
-        {
-           fit_Preiod1(FrzCheckCount1Store,FrzCheckCount2Store);
-           TC0_Timer16bitPeriodSet(TimerBaseCode);
-           for(uint32_t c=0;c<(TOTAL_SAMPLES+1);c++)                            /*!< Getting 300 samples */
+        {   
+            fit_Preiod1(FrzCheckCount1Store,FrzCheckCount2Store);
+            TC0_Timer16bitPeriodSet(TimerBaseCode);
+            for(uint32_t c=0;c<(TOTAL_SAMPLES+1);c++)                            /*!< Getting 300 samples */
             {
                 TC0_TimerStart();
                 txData[0]=0x00;
@@ -794,10 +794,11 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
                 while(!TC0_TimerPeriodHasExpired());                            /*!< check if timer period interrupt flag is set */
                 TC0_TimerStop();                                                /*!< Disable the TC counter */
             }
+            sum1=sum1+Rms_calculation1(&Current_Reading[0]);
         }
-        sum1=sum1+Rms_calculation1(&Current_Reading[0]);
         zero_current=1;
         offset=sum1/ZERO_CALIBRATION_SAMPLES;                                    /*!< divide by no of samples */
+        printf("\r\nOffset calibrated as: %lu", offset);
         ac_count=0;                                                             /*!< AC calibration table index to 0 */
         dc_count=0;                                                             /*!< DC calibration table index to 0 */
         pdc=0;                                                                  
@@ -847,6 +848,7 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
         }
         Rms_voltage1=Rms_calculation(&Current_Reading[0]);          /*!< RMS calculation */
         Adc_calibration[ac_count][1]=Rms_voltage1+offset;           /*!< storing in ADC calibration table */
+        printf("\r\nAC value calibrated as: %d", Adc_calibration[ac_count][1]);
         calibration_flag = 1;                                                   /*!< Set the flag for correct data */
         ac_count++;
     }
@@ -896,6 +898,7 @@ uint8_t calibration(uint8_t cur_type, uint8_t data1, uint8_t data2)
         } 
         Rms_voltage1=Rms_calculation1(&Current_Reading[0]);                     /*!< RMS calculation */
         Adc_calibration[dc_count][3]= Rms_voltage1;                             /*!< storing in adc calibration table */
+        printf("\r\nDC value calibrated as: %d", Adc_calibration[dc_count][3]);
         calibration_flag = 1;                                                   /*!< Set the flag for correct data */
         dc_count++;
     }
@@ -1026,6 +1029,7 @@ int main ( void )
          for(uint32_t b1=0;b1<4;b1++)
          {
             Adc_calibration[a1][b1]= *(data3+h);
+            //printf("\r\nCal Table [%d][%d]: %d",a1,b1,Adc_calibration[a1][b1]);
             h++;
          }
     }
@@ -1048,6 +1052,15 @@ int main ( void )
     }
     #endif
 
+    printf("\r\nOffset: %lu",offset);
+    for(uint32_t a1=0;a1<20;a1++)
+    {
+         for(uint32_t b1=0;b1<4;b1++)
+         {
+            printf("\r\nCal Table [%lu][%lu]: %d",a1,b1,Adc_calibration[a1][b1]);
+         }
+    }
+    
     freqcountenable = true;                                                     //enable the frequency counter sampling
      
     while ( true )
@@ -1125,8 +1138,8 @@ int main ( void )
         Rms_Dataa=Rms_Data;
        // Rms_Data=average(aa,RMS_AVG-1);
             
-      //  printf("\r\nAC Frz = %dHz", FrzPreiod);
-      //  printf("\n\n\rRMS_FIT Current: %d", Rms_Dataa);
+        printf("\r\nAC Frz = %dHz", FrzPreiod);
+        printf("\n\n\rRMS_FIT Current: %d", Rms_Dataa);
         //FFFFF=true;
         if((Rms_Dataa>=6)&&(Rms_Dataa<=15))                                       /*!< Rms Current is greater than 6mA  and less than 15mA LED will toggle*/
         {
